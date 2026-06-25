@@ -1,0 +1,51 @@
+name: Release Android
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+      - run: npm install -g eas-cli@latest
+
+      - name: Build APK on EAS
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build \
+            --platform android \
+            --profile preview \
+            --non-interactive \
+            --wait \
+            --json > build.json
+          jq -r '.[0].artifacts.buildUrl // .[0].artifacts.applicationArchiveUrl' build.json > apk-url.txt
+          cat apk-url.txt
+
+      - name: Download APK
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          curl -L --fail -H "Authorization: Bearer $EXPO_TOKEN" -o TeletraanMobile.apk "$(cat apk-url.txt)"
+          ls -lh TeletraanMobile.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: TeletraanMobile.apk
+          make_latest: true
