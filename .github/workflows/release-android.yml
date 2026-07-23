@@ -1,0 +1,76 @@
+name: Release Android
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+      - run: npm install -g eas-cli@latest
+
+      - name: Build APK on EAS
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build \
+            --platform android \
+            --profile preview \
+            --non-interactive \
+            --wait \
+            --json > build.json
+          jq -r '.[0].artifacts.buildUrl // .[0].artifacts.applicationArchiveUrl' build.json > apk-url.txt
+
+      - name: Download APK
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          curl -L --fail -H "Authorization: Bearer $EXPO_TOKEN" -o Teletraan.apk "$(cat apk-url.txt)"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: Teletraan.apk
+          make_latest: true
+
+      # Push the fresh APK to the Teletraan-Download repo so Vercel serves it
+      # from its edge CDN — GitHub Releases downloads are S3-region-locked and
+      # feel noticeably slower to users than a Vercel-hosted file. Uses git
+      # push (not the Contents API, which caps at 100 MB). Requires a
+      # DOWNLOAD_REPO_TOKEN secret with contents:write on the download repo.
+      - name: Sync APK to Vercel download site
+        env:
+          SYNC_TOKEN: ${{ secrets.DOWNLOAD_REPO_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo 'DOWNLOAD_REPO_TOKEN secret is not set — skipping Vercel sync'
+            exit 0
+          fi
+          git clone --depth=1 "https://x-access-token:${SYNC_TOKEN}@github.com/ayobamizenthos/Teletraan-Download.git" download-repo
+          cp Teletraan.apk download-repo/Teletraan.apk
+          cd download-repo
+          git config user.email 'ci@teletraan.local'
+          git config user.name 'teletraan-ci'
+          git add Teletraan.apk
+          if git diff --cached --quiet; then
+            echo 'APK unchanged, skipping sync'
+          else
+            git commit -m "Sync APK from Build ${{ github.run_number }}"
+            git -c http.postBuffer=524288000 push origin main
+          fi
